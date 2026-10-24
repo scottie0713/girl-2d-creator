@@ -1,11 +1,13 @@
 import React from 'react';
 import { EditorMode } from '../types';
-import { Sparkles, Box, PenTool, Download, ArrowRight } from 'lucide-react';
+import { Sparkles, Box, Eye, PenTool, Download, ArrowRight, ArrowLeft } from 'lucide-react';
 
 interface HeaderProps {
   mode: EditorMode;
   onModeChange: (mode: EditorMode) => void;
-  onGenerate2D: () => void;
+  onProceedToPreview: () => void;
+  onProceedToStudio: () => void;
+  onBackToPose: () => void;
   onOpenExport: () => void;
   has2DData: boolean;
 }
@@ -13,7 +15,9 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   mode,
   onModeChange,
-  onGenerate2D,
+  onProceedToPreview,
+  onProceedToStudio,
+  onBackToPose,
   onOpenExport,
   has2DData,
 }) => {
@@ -29,7 +33,7 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* ステップ切り替えナビ */}
+      {/* 3ステップ切り替えナビゲーション */}
       <div className="step-nav">
         <button
           className={`step-btn ${mode === '3d-pose' ? 'active' : ''}`}
@@ -41,32 +45,63 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         <button
-          className={`step-btn ${mode === '2d-vector' ? 'active' : ''}`}
+          className={`step-btn ${mode === '2d-preview' ? 'active' : ''}`}
           onClick={() => {
             if (has2DData) {
-              onModeChange('2d-vector');
+              onModeChange('2d-preview');
             } else {
-              onGenerate2D();
+              onProceedToPreview();
             }
           }}
         >
           <span className="step-num">2</span>
+          <Eye size={16} />
+          <span>2D構図確認</span>
+        </button>
+
+        <button
+          className={`step-btn ${mode === '2d-studio' ? 'active' : ''}`}
+          onClick={() => {
+            if (has2DData) {
+              onModeChange('2d-studio');
+            } else {
+              onProceedToPreview();
+            }
+          }}
+        >
+          <span className="step-num">3</span>
           <PenTool size={16} />
-          <span>2Dベクター＆嘘パース調整</span>
+          <span>2Dベクター調整</span>
         </button>
       </div>
 
-      {/* アクションボタン群 */}
+      {/* 右側アクションボタン */}
       <div className="header-actions">
-        {mode === '3d-pose' ? (
-          <button className="btn-primary" onClick={onGenerate2D}>
-            <span>2D線画化して調整へ</span>
+        {mode === '3d-pose' && (
+          <button className="btn-primary" onClick={onProceedToPreview}>
+            <span>保存して2D確認へ</span>
             <ArrowRight size={16} />
           </button>
-        ) : (
+        )}
+
+        {mode === '2d-preview' && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-secondary" onClick={onBackToPose}>
+              <ArrowLeft size={15} />
+              <span>3Dに戻る</span>
+            </button>
+            <button className="btn-primary" onClick={onProceedToStudio}>
+              <Download size={15} />
+              <span>保存して2D調整へ</span>
+              <ArrowRight size={15} />
+            </button>
+          </div>
+        )}
+
+        {mode === '2d-studio' && (
           <button className="btn-primary" onClick={onOpenExport}>
             <Download size={16} />
-            <span>レイヤー保存 (PSD/SVG)</span>
+            <span>レイヤー再保存 (PSD/SVG)</span>
           </button>
         )}
       </div>

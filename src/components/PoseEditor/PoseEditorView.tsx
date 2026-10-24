@@ -2,15 +2,21 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { VrmMannequin } from '../../utils/three/VrmMannequin';
+import { StateStorage } from '../../utils/storage/StateStorage';
 import { POSE_PRESETS } from '../../utils/three/PosePresets';
-import { BodyPartId, PosePreset } from '../../types';
-import { Camera, RotateCcw, Sparkles, Sliders, Upload, Download, UserCheck } from 'lucide-react';
+import { BodyPartId, PosePreset, Saved3DState } from '../../types';
+import { Camera, RotateCcw, Sparkles, Sliders, Upload, Download, UserCheck, CheckCircle2 } from 'lucide-react';
 
 interface PoseEditorViewProps {
-  onInitialized: (vrmMannequin: VrmMannequin, camera: THREE.PerspectiveCamera) => void;
+  onInitialized: (
+    vrmMannequin: VrmMannequin,
+    camera: THREE.PerspectiveCamera,
+    saveFn: () => void
+  ) => void;
+  onNextStep: () => void;
 }
 
-export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized }) => {
+export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized, onNextStep }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const vrmRef = useRef<VrmMannequin | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -26,6 +32,31 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     z: 0,
   });
   const [isLoadingVrm, setIsLoadingVrm] = useState<boolean>(true);
+  const [lastSavedTime, setLastSavedTime] = useState<string>('');
+
+  // 3Dモデルの位置・ポーズ・カメラの保存
+  const saveCurrent3DState = () => {
+    if (!cameraRef.current || !controlsRef.current || !vrmRef.current) return;
+    const cam = cameraRef.current;
+    const ctrl = controlsRef.current;
+    const vrm = vrmRef.current;
+
+    const state: Saved3DState = {
+      camera: {
+        fov: cam.fov,
+        position: [cam.position.x, cam.position.y, cam.position.z],
+        target: [ctrl.target.x, ctrl.target.y, ctrl.target.z],
+      },
+      pose: vrm.getCurrentPose(),
+      timestamp: Date.now(),
+    };
+
+    StateStorage.save3DState(state);
+    const now = new Date();
+    setLastSavedTime(
+      `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
+    );
+  };
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -60,7 +91,12 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     controls.minDistance = 2;
     controlsRef.current = controls;
 
-    // 5. Lighting (陰影が際立つ3点スタジオライティング)
+    // カメラ変更時に保存
+    controls.addEventListener('change', () => {
+      saveCurrent3DState();
+    });
+
+    // 5. Lighting
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
     scene.add(ambientLight);
 
@@ -87,25 +123,51 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     scene.add(vrmMannequin.rootGroup);
     vrmRef.current = vrmMannequin;
 
-    onInitialized(vrmMannequin, camera);
+    onInitialized(vrmMannequin, camera, saveCurrent3DState);
 
-    // squoskie-1_2.vrm（下地ポリゴン完全保持素体）の自動ロード
+    // squoskie-1_2.vrm（下着完全素体）の自動ロード＆保存状態の復元
     setIsLoadingVrm(true);
     vrmMannequin
       .loadFromUrl('/models/squoskie-1_2.vrm')
       .then(() => {
         setIsLoadingVrm(false);
-        const initialPreset = POSE_PRESETS.find((p) => p.id === 's-curve');
-        if (initialPreset) {
-          vrmMannequin.applyPose(initialPreset.rotations);
+
+        // 前回保存された状態があれば復元
+        const savedState = StateStorage.load3DState();
+        if (savedState) {
+          // カメラ復元
+          camera.fov = savedState.camera.fov;
+          setFov(savedState.camera.fov);
+          camera.position.set(...savedState.camera.position);
+          controls.target.set(...savedState.camera.target);
+          camera.updateProjectionMatrix();
+          controls.update();
+
+          // ポーズ復元
+          if (savedState.pose && Object.keys(savedState.pose).length > 0) {
+            vrmMannequin.applyPose(savedState.pose);
+          }
+        } else {
+          // 初期ポーズ (S字立ち)
+          const initialPreset = POSE_PRESETS.find((p) => p.id === 's-curve');
+          if (initialPreset) {
+            vrmMannequin.applyPose(initialPreset.rotations);
+          }
         }
+
+        saveCurrent3DState();
       })
       .catch((err) => {
         console.error('VRM load failed:', err);
         setIsLoadingVrm(false);
       });
 
-    // 8. Animation Loop
+    // 8. 定期自動保存タイマー (2.5秒ごと)
+    const autoSaveInterval = setInterval(() => {
+      saveCurrent3DState();
+    }, 2500);
+
+    // 9. Animation Loop
     let animId: number;
     const animate = () => {
       animId = requestAnimationFrame(animate);
@@ -125,6 +187,7 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     window.addEventListener('resize', handleResize);
 
     return () => {
+      clearInterval(autoSaveInterval);
       window.removeEventListener('resize', handleResize);
       cancelAnimationFrame(animId);
       renderer.dispose();
@@ -134,7 +197,7 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     };
   }, []);
 
-  // ファイルアップロード（別のVRM/GLBの読み込み）
+  // ファイルアップロード
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !vrmRef.current) return;
@@ -146,6 +209,7 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
         setIsLoadingVrm(false);
         const initialPreset = POSE_PRESETS.find((p) => p.id === activePreset) || POSE_PRESETS[0];
         vrmRef.current?.applyPose(initialPreset.rotations);
+        saveCurrent3DState();
       })
       .catch((err) => {
         setIsLoadingVrm(false);
@@ -166,6 +230,7 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     if (cameraRef.current) {
       cameraRef.current.fov = newFov;
       cameraRef.current.updateProjectionMatrix();
+      saveCurrent3DState();
     }
   };
 
@@ -174,6 +239,7 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     setActivePreset(preset.id);
     if (vrmRef.current) {
       vrmRef.current.applyPose(preset.rotations);
+      saveCurrent3DState();
     }
   };
 
@@ -202,6 +268,7 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
         break;
     }
     ctrl.update();
+    saveCurrent3DState();
   };
 
   // 関節手動回転
@@ -210,7 +277,14 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     setPartRotations(updated);
     if (vrmRef.current) {
       vrmRef.current.setPartRotation(selectedPart, updated.x, updated.y, updated.z);
+      saveCurrent3DState();
     }
+  };
+
+  // 「次へ」ボタン押下時：保存して次画面へ
+  const handleProceedToNext = () => {
+    saveCurrent3DState();
+    onNextStep();
   };
 
   return (
@@ -220,6 +294,32 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
         <div className="floating-3d-hints">
           <span>ドラッグ: 視点回転 | 右ドラッグ: 平行移動 | スクロール: ズーム</span>
         </div>
+
+        {/* 自動保存インジケータ */}
+        {lastSavedTime && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: 16,
+              left: 16,
+              background: 'rgba(22, 25, 34, 0.75)',
+              backdropFilter: 'blur(8px)',
+              padding: '6px 12px',
+              borderRadius: 6,
+              border: '1px solid var(--border-color)',
+              fontSize: '0.75rem',
+              color: '#34d399',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              pointerEvents: 'none',
+              zIndex: 10,
+            }}
+          >
+            <CheckCircle2 size={13} />
+            <span>3D状態を自動保存済み ({lastSavedTime})</span>
+          </div>
+        )}
 
         {/* VRMローディング表示 */}
         {isLoadingVrm && (
@@ -248,13 +348,24 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
       {/* 右側：ポーズ・素体設定パネル */}
       <div className="side-panel">
         <div className="panel-header">
-          <span>3Dポージング設定</span>
+          <span>1. 3Dポージング設定</span>
           <button
             onClick={() => handleApplyPreset(POSE_PRESETS[0])}
             title="ポーズ初期化"
             style={{ display: 'flex', alignItems: 'center', color: 'var(--text-sub)' }}
           >
             <RotateCcw size={16} />
+          </button>
+        </div>
+
+        {/* 次へ進むアクションボタン（パネル最上部にも目立つように配置） */}
+        <div style={{ padding: '16px 16px 0' }}>
+          <button
+            className="btn-primary"
+            onClick={handleProceedToNext}
+            style={{ width: '100%', justifyContent: 'center', padding: '10px 16px', fontSize: '0.92rem' }}
+          >
+            <span>保存して2D確認画面へ ➔</span>
           </button>
         </div>
 

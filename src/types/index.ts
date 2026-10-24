@@ -60,7 +60,17 @@ export interface LayerItem {
   strokeWidth: number;
 }
 
-export type EditorMode = '3d-pose' | '2d-vector';
+export type EditorMode = '3d-pose' | '2d-preview' | '2d-studio';
+
+export interface Saved3DState {
+  camera: {
+    fov: number;
+    position: [number, number, number];
+    target: [number, number, number];
+  };
+  pose: Record<string, [number, number, number]>;
+  timestamp: number;
+}
 
 export type VectorTool =
   | 'select'        // アンカー・ハンドル選択＆移動

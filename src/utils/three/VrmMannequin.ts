@@ -219,6 +219,26 @@ export class VrmMannequin {
     }
   }
 
+  // 現在の全パーツのポーズ（オイラー回転）を取得
+  public getCurrentPose(): Record<string, [number, number, number]> {
+    const pose: Record<string, [number, number, number]> = {};
+    const partIds: BodyPartId[] = [
+      'pelvis', 'waist', 'chest', 'neck', 'head',
+      'upperArmL', 'forearmL', 'handL',
+      'upperArmR', 'forearmR', 'handR',
+      'thighL', 'shinL', 'footL',
+      'thighR', 'shinR', 'footR',
+    ];
+    partIds.forEach((partId) => {
+      const bone = this.getBone(partId);
+      if (bone) {
+        pose[partId] = [bone.rotation.x, bone.rotation.y, bone.rotation.z];
+      }
+    });
+    return pose;
+  }
+
+
   /**
    * 髪・服・目鼻口を完全に除外した「素体のみの3Dモデル（.glb）」をエクスポートして保存
    */
