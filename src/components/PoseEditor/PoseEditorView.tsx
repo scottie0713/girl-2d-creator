@@ -1,33 +1,22 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { FemaleMannequin } from '../../utils/three/MannequinModel';
 import { VrmMannequin } from '../../utils/three/VrmMannequin';
 import { POSE_PRESETS } from '../../utils/three/PosePresets';
 import { BodyPartId, PosePreset } from '../../types';
-import { Camera, RotateCcw, Sparkles, Sliders, Upload, Download, Check, UserCheck } from 'lucide-react';
-
-export type ActiveModelType = 'vrm' | 'procedural';
+import { Camera, RotateCcw, Sparkles, Sliders, Upload, Download, UserCheck } from 'lucide-react';
 
 interface PoseEditorViewProps {
-  onInitialized: (
-    mannequin: FemaleMannequin,
-    vrmMannequin: VrmMannequin,
-    camera: THREE.PerspectiveCamera,
-    getActiveType: () => ActiveModelType
-  ) => void;
+  onInitialized: (vrmMannequin: VrmMannequin, camera: THREE.PerspectiveCamera) => void;
 }
 
 export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized }) => {
   const mountRef = useRef<HTMLDivElement>(null);
-  const mannequinRef = useRef<FemaleMannequin | null>(null);
   const vrmRef = useRef<VrmMannequin | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-  const sceneRef = useRef<THREE.Scene | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [modelType, setModelType] = useState<ActiveModelType>('vrm');
   const [activePreset, setActivePreset] = useState<string>('s-curve');
   const [fov, setFov] = useState<number>(38);
   const [selectedPart, setSelectedPart] = useState<BodyPartId>('head');
@@ -37,10 +26,6 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     z: 0,
   });
   const [isLoadingVrm, setIsLoadingVrm] = useState<boolean>(true);
-  const [vrmLoadedSuccess, setVrmLoadedSuccess] = useState<boolean>(false);
-
-  const modelTypeRef = useRef<ActiveModelType>('vrm');
-  modelTypeRef.current = modelType;
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -52,7 +37,6 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x131620);
     scene.fog = new THREE.FogExp2(0x131620, 0.04);
-    sceneRef.current = scene;
 
     // 2. Camera
     const camera = new THREE.PerspectiveCamera(fov, width / height, 0.1, 100);
@@ -98,19 +82,12 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     grid.position.y = 0;
     scene.add(grid);
 
-    // 7. プロシージャル素体
-    const mannequin = new FemaleMannequin();
-    mannequin.rootGroup.visible = false;
-    scene.add(mannequin.rootGroup);
-    mannequinRef.current = mannequin;
-
-    // 8. VRM素体（squoskie-1.vrm）
+    // 7. VRM素体
     const vrmMannequin = new VrmMannequin();
     scene.add(vrmMannequin.rootGroup);
     vrmRef.current = vrmMannequin;
 
-    // 初期化通知
-    onInitialized(mannequin, vrmMannequin, camera, () => modelTypeRef.current);
+    onInitialized(vrmMannequin, camera);
 
     // squoskie-1_2.vrm（下地ポリゴン完全保持素体）の自動ロード
     setIsLoadingVrm(true);
@@ -118,21 +95,17 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
       .loadFromUrl('/models/squoskie-1_2.vrm')
       .then(() => {
         setIsLoadingVrm(false);
-        setVrmLoadedSuccess(true);
-        // S字立ちポーズ適用
         const initialPreset = POSE_PRESETS.find((p) => p.id === 's-curve');
         if (initialPreset) {
           vrmMannequin.applyPose(initialPreset.rotations);
         }
       })
       .catch((err) => {
-        console.warn('VRM load failed, fallback to procedural:', err);
+        console.error('VRM load failed:', err);
         setIsLoadingVrm(false);
-        setModelType('procedural');
-        mannequin.rootGroup.visible = true;
       });
 
-    // 9. Animation Loop
+    // 8. Animation Loop
     let animId: number;
     const animate = () => {
       animId = requestAnimationFrame(animate);
@@ -161,15 +134,6 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     };
   }, []);
 
-  // モデル種別切り替え
-  const handleModelTypeChange = (type: ActiveModelType) => {
-    setModelType(type);
-    if (mannequinRef.current && vrmRef.current) {
-      mannequinRef.current.rootGroup.visible = type === 'procedural';
-      vrmRef.current.rootGroup.visible = type === 'vrm';
-    }
-  };
-
   // ファイルアップロード（別のVRM/GLBの読み込み）
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -180,8 +144,6 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
       .loadFromFile(file)
       .then(() => {
         setIsLoadingVrm(false);
-        setVrmLoadedSuccess(true);
-        handleModelTypeChange('vrm');
         const initialPreset = POSE_PRESETS.find((p) => p.id === activePreset) || POSE_PRESETS[0];
         vrmRef.current?.applyPose(initialPreset.rotations);
       })
@@ -210,10 +172,8 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
   // プリセットポーズ適用
   const handleApplyPreset = (preset: PosePreset) => {
     setActivePreset(preset.id);
-    if (modelType === 'vrm' && vrmRef.current) {
+    if (vrmRef.current) {
       vrmRef.current.applyPose(preset.rotations);
-    } else if (mannequinRef.current) {
-      mannequinRef.current.applyPose(preset.rotations);
     }
   };
 
@@ -248,10 +208,8 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
   const handleRotationChange = (axis: 'x' | 'y' | 'z', value: number) => {
     const updated = { ...partRotations, [axis]: value };
     setPartRotations(updated);
-    if (modelType === 'vrm' && vrmRef.current) {
+    if (vrmRef.current) {
       vrmRef.current.setPartRotation(selectedPart, updated.x, updated.y, updated.z);
-    } else if (mannequinRef.current) {
-      mannequinRef.current.setPartRotation(selectedPart, updated.x, updated.y, updated.z);
     }
   };
 
@@ -282,7 +240,7 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
             }}
           >
             <Sparkles className="animate-spin" size={20} color="var(--primary)" />
-            <span>VRoid素体（squoskie-1）を読み込み・素体化中...</span>
+            <span>VRoid素体（squoskie）を読み込み・素体化中...</span>
           </div>
         )}
       </div>
@@ -300,83 +258,52 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
           </button>
         </div>
 
-        {/* モデル切り替え & 素体エクスポートセクション */}
+        {/* モデル管理 & 素体エクスポートセクション */}
         <div className="panel-section">
           <div className="section-title">
             <UserCheck size={14} style={{ display: 'inline', marginRight: 6 }} />
-            使用素体モデル
+            素体モデル管理
           </div>
 
-          <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <button
-              className={`btn-secondary ${modelType === 'vrm' ? 'active' : ''}`}
-              onClick={() => handleModelTypeChange('vrm')}
+              className="btn-secondary"
+              onClick={handleExportCleanGlb}
               style={{
-                flex: 1,
-                padding: '6px 8px',
+                width: '100%',
+                padding: '8px 12px',
+                fontSize: '0.82rem',
+                color: 'var(--accent-cyan)',
+                borderColor: 'rgba(6,182,212,0.3)',
+                background: 'rgba(6,182,212,0.08)',
+              }}
+              title="髪・服を除去した素体だけのGLBファイルをダウンロード"
+            >
+              <Download size={15} />
+              <span>素体モデル保存 (.glb)</span>
+            </button>
+
+            <button
+              className="btn-secondary"
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                width: '100%',
+                padding: '6px 10px',
                 fontSize: '0.8rem',
-                borderColor: modelType === 'vrm' ? 'var(--primary)' : undefined,
-                background: modelType === 'vrm' ? 'rgba(99,102,241,0.15)' : undefined,
+                color: 'var(--text-muted)',
               }}
             >
-              VRoid素体 (squoskie)
+              <Upload size={14} />
+              <span>別のVRM/GLBを読込</span>
             </button>
-            <button
-              className={`btn-secondary ${modelType === 'procedural' ? 'active' : ''}`}
-              onClick={() => handleModelTypeChange('procedural')}
-              style={{
-                flex: 1,
-                padding: '6px 8px',
-                fontSize: '0.8rem',
-                borderColor: modelType === 'procedural' ? 'var(--primary)' : undefined,
-                background: modelType === 'procedural' ? 'rgba(99,102,241,0.15)' : undefined,
-              }}
-            >
-              基本素体
-            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".vrm,.glb,.gltf"
+              style={{ display: 'none' }}
+              onChange={handleFileUpload}
+            />
           </div>
-
-          {/* 素体GLBダウンロード & 外部VRMアップロード */}
-          {modelType === 'vrm' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <button
-                className="btn-secondary"
-                onClick={handleExportCleanGlb}
-                style={{
-                  width: '100%',
-                  padding: '6px 10px',
-                  fontSize: '0.78rem',
-                  color: 'var(--accent-cyan)',
-                  borderColor: 'rgba(6,182,212,0.3)',
-                }}
-                title="髪・服を除去した素体だけのGLBファイルをダウンロード"
-              >
-                <Download size={14} />
-                <span>素体モデル保存 (.glb)</span>
-              </button>
-
-              <button
-                className="btn-secondary"
-                onClick={() => fileInputRef.current?.click()}
-                style={{
-                  width: '100%',
-                  padding: '6px 10px',
-                  fontSize: '0.78rem',
-                  color: 'var(--text-muted)',
-                }}
-              >
-                <Upload size={14} />
-                <span>別のVRM/GLBを読込</span>
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".vrm,.glb,.gltf"
-                style={{ display: 'none' }}
-                onChange={handleFileUpload}
-              />
-            </div>
-          )}
         </div>
 
         {/* カメラ・画角アングル設定 */}

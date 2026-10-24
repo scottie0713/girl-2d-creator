@@ -1,58 +1,12 @@
 import * as THREE from 'three';
 import { BodyPartId, ExtractedVectorData, PartVectorData, Point2D, VectorPathSegment } from '../../types';
-import { FemaleMannequin } from './MannequinModel';
 import { VrmMannequin } from './VrmMannequin';
 
 export class VectorExtractor {
   /**
-   * 3Dマネキンの現在のアングル・ポーズから、
-   * 部位ごとの2Dベクター線画（輪郭・稜線）および内側塗りつぶし領域を抽出
-   */
-  public static extract(
-    mannequin: FemaleMannequin,
-    camera: THREE.PerspectiveCamera,
-    viewportWidth: number,
-    viewportHeight: number
-  ): ExtractedVectorData {
-    mannequin.rootGroup.updateMatrixWorld(true);
-    camera.updateMatrixWorld(true);
-
-    const partsData: PartVectorData[] = [];
-
-    mannequin.parts.forEach((partInfo) => {
-      const partVector = this.extractFromMesh(
-        partInfo.id,
-        partInfo.name,
-        partInfo.mesh,
-        camera,
-        viewportWidth,
-        viewportHeight
-      );
-      if (partVector) {
-        partsData.push(partVector);
-      }
-    });
-
-    // 視点からの距離（深度）でソート（奥から手前へ並べる）
-    partsData.sort((a, b) => b.depth - a.depth);
-
-    return {
-      timestamp: Date.now(),
-      width: viewportWidth,
-      height: viewportHeight,
-      camera: {
-        fov: camera.fov,
-        position: [camera.position.x, camera.position.y, camera.position.z],
-        target: [0, 5, 0],
-      },
-      parts: partsData,
-    };
-  }
-
-  /**
    * VRM素体モデルから2Dベクター線画＆下地塗りを抽出
    */
-  public static extractFromVrm(
+  public static extract(
     vrmMannequin: VrmMannequin,
     camera: THREE.PerspectiveCamera,
     viewportWidth: number,
