@@ -69,7 +69,8 @@ export type VectorTool =
   | 'warp'          // パペットワープ / 嘘パース誇張
   | 'pen'           // ベクターペン追加加筆
   | 'smooth'        // パス平滑化
-  | 'eraser';       // 消しゴム
+  | 'eraser'        // 消しゴム
+  | 'pan';          // 手のひら（キャンバス移動）
 
 export interface PosePreset {
   id: string;

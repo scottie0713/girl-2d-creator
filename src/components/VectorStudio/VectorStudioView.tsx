@@ -5,15 +5,16 @@ import {
   MousePointer,
   Sparkles,
   Maximize2,
-  Sliders,
+  Hand,
+  ZoomIn,
+  ZoomOut,
+  Maximize,
   Eye,
   EyeOff,
   Lock,
   Unlock,
   Smile,
   Layers,
-  Palette,
-  CheckCircle2,
 } from 'lucide-react';
 
 interface VectorStudioViewProps {
@@ -35,6 +36,7 @@ export const VectorStudioView: React.FC<VectorStudioViewProps> = ({
   const [brushRadius, setBrushRadius] = useState<number>(45);
   const [showFaceGuide, setShowFaceGuide] = useState<boolean>(true);
   const [skinColor, setSkinColor] = useState<string>('#fcf4ed');
+  const [zoomPercent, setZoomPercent] = useState<number>(100);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -52,6 +54,7 @@ export const VectorStudioView: React.FC<VectorStudioViewProps> = ({
     const manager = new PaperManager(canvas, {
       onLayersChange: (newLayers) => setLayers(newLayers),
       onSelectionChange: (id) => setSelectedLayerId(id),
+      onZoomChange: (z) => setZoomPercent(Math.round(z * 100)),
     });
     managerRef.current = manager;
     onManagerReady(manager);
@@ -90,6 +93,18 @@ export const VectorStudioView: React.FC<VectorStudioViewProps> = ({
     }
   };
 
+  const handleFitToScreen = () => {
+    if (managerRef.current) {
+      managerRef.current.fitToScreen();
+    }
+  };
+
+  const handleResetZoom = () => {
+    if (managerRef.current) {
+      managerRef.current.resetZoom();
+    }
+  };
+
   const handleLayerVisibility = (layerId: string, currentVal: boolean) => {
     if (managerRef.current) {
       managerRef.current.setLayerVisibility(layerId, !currentVal);
@@ -105,7 +120,6 @@ export const VectorStudioView: React.FC<VectorStudioViewProps> = ({
   const handleSkinColorChange = (hex: string) => {
     setSkinColor(hex);
     if (managerRef.current) {
-      // 全ての下地レイヤーに適用
       layers
         .filter((l) => l.type === 'fill')
         .forEach((l) => {
@@ -141,10 +155,38 @@ export const VectorStudioView: React.FC<VectorStudioViewProps> = ({
         >
           <Maximize2 size={18} />
         </button>
+
+        <button
+          className={`tool-btn ${currentTool === 'pan' ? 'active' : ''}`}
+          onClick={() => handleToolChange('pan')}
+          title="手のひら・画面移動 (H / スペース+ドラッグ)"
+        >
+          <Hand size={18} />
+        </button>
       </div>
 
       {/* 中央キャンバス＆上部プロパティバー */}
       <div className="vector-canvas-wrapper">
+        {/* 操作ガイドヒント（画面左上） */}
+        <div
+          style={{
+            position: 'absolute',
+            top: 16,
+            left: 16,
+            background: 'rgba(22, 25, 34, 0.75)',
+            backdropFilter: 'blur(8px)',
+            padding: '6px 12px',
+            borderRadius: 6,
+            border: '1px solid var(--border-color)',
+            fontSize: '0.75rem',
+            color: 'var(--text-muted)',
+            pointerEvents: 'none',
+            zIndex: 15,
+          }}
+        >
+          <span>ホイール: 拡大縮小 | スペース+ドラッグ / 右ドラッグ: 画面移動</span>
+        </div>
+
         {/* 上部フローティング設定バー */}
         <div className="floating-properties-bar">
           {currentTool === 'liquify' ? (
@@ -217,6 +259,48 @@ export const VectorStudioView: React.FC<VectorStudioViewProps> = ({
 
         {/* Paper.js Canvas */}
         <canvas ref={canvasRef} className="vector-canvas" />
+
+        {/* 右下ズーム＆全体表示コントロールバー */}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 20,
+            right: 20,
+            background: 'rgba(22, 25, 34, 0.85)',
+            backdropFilter: 'blur(10px)',
+            border: '1px solid var(--border-color)',
+            borderRadius: 8,
+            padding: '6px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            boxShadow: 'var(--shadow-md)',
+            zIndex: 15,
+          }}
+        >
+          <span style={{ fontSize: '0.8rem', fontWeight: 600, minWidth: 42, color: 'var(--text-main)' }}>
+            {zoomPercent}%
+          </span>
+
+          <button
+            className="layer-icon-btn"
+            onClick={handleFitToScreen}
+            title="全体表示 (画面に合わせる)"
+            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.75rem' }}
+          >
+            <Maximize size={15} />
+            <span>全体表示</span>
+          </button>
+
+          <button
+            className="layer-icon-btn"
+            onClick={handleResetZoom}
+            title="100%等倍表示"
+            style={{ fontSize: '0.75rem' }}
+          >
+            100%
+          </button>
+        </div>
       </div>
 
       {/* 右側レイヤーパネル */}
@@ -235,7 +319,6 @@ export const VectorStudioView: React.FC<VectorStudioViewProps> = ({
               key={layer.id}
               className={`layer-item ${selectedLayerId === layer.id ? 'active' : ''}`}
             >
-              {/* 表示・非表示切替 */}
               <button
                 className="layer-icon-btn"
                 onClick={() => handleLayerVisibility(layer.id, layer.visible)}
@@ -243,7 +326,6 @@ export const VectorStudioView: React.FC<VectorStudioViewProps> = ({
                 {layer.visible ? <Eye size={15} /> : <EyeOff size={15} color="#ef4444" />}
               </button>
 
-              {/* ロック切替 */}
               <button
                 className="layer-icon-btn"
                 onClick={() => handleLayerLock(layer.id, layer.locked)}
@@ -251,7 +333,6 @@ export const VectorStudioView: React.FC<VectorStudioViewProps> = ({
                 {layer.locked ? <Lock size={15} color="#f59e0b" /> : <Unlock size={15} />}
               </button>
 
-              {/* カラーチップ */}
               <div
                 className="layer-color-preview"
                 style={{
@@ -261,10 +342,8 @@ export const VectorStudioView: React.FC<VectorStudioViewProps> = ({
                 }}
               />
 
-              {/* レイヤー名 */}
               <span className="layer-name">{layer.name}</span>
 
-              {/* 種類バッジ */}
               <span
                 style={{
                   fontSize: '0.68rem',

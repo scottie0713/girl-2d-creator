@@ -26,15 +26,22 @@ export class PaperManager {
   private faceGuideGroup: paper.Group | null = null;
   private showFaceGuide: boolean = true;
 
+  // パン＆ズーム設定
+  private isSpacePressed: boolean = false;
+  private isPanning: boolean = false;
+  private lastPanPoint: { x: number; y: number } = { x: 0, y: 0 };
+
   // コールバック
   private onLayersChange?: (layers: LayerItem[]) => void;
   private onSelectionChange?: (selectedId: string | null) => void;
+  private onZoomChange?: (zoom: number) => void;
 
   constructor(
     canvas: HTMLCanvasElement,
     callbacks?: {
       onLayersChange?: (layers: LayerItem[]) => void;
       onSelectionChange?: (selectedId: string | null) => void;
+      onZoomChange?: (zoom: number) => void;
     }
   ) {
     this.canvas = canvas;
@@ -43,8 +50,10 @@ export class PaperManager {
 
     this.onLayersChange = callbacks?.onLayersChange;
     this.onSelectionChange = callbacks?.onSelectionChange;
+    this.onZoomChange = callbacks?.onZoomChange;
 
     this.setupInteractions();
+    this.setupWheelAndPan();
   }
 
   // 抽出された3Dベクターデータから2Dキャンバスを初期化
@@ -146,6 +155,9 @@ export class PaperManager {
     // 頭部の上に顔の十字アタリ線を生成
     this.createFaceGuide();
 
+    // 初期表示時にキャンバス全体にフィット
+    this.fitToScreen();
+
     this.scope.view.draw();
     if (this.onLayersChange) {
       this.onLayersChange([...this.layers]);
@@ -222,6 +234,122 @@ export class PaperManager {
     this.brushStrength = Math.max(0.1, Math.min(1.0, strength));
   }
 
+  // マウスホイール（ズーム）とスペースキー（パン移動）のイベント登録
+  private setupWheelAndPan() {
+    const canvas = this.canvas;
+
+    // ホイールによるカーソル中心ズーム
+    canvas.addEventListener(
+      'wheel',
+      (e: WheelEvent) => {
+        e.preventDefault();
+
+        const view = this.scope.view;
+        const oldZoom = view.zoom;
+        const zoomFactor = e.deltaY < 0 ? 1.08 : 0.92;
+        const newZoom = Math.max(0.2, Math.min(5.0, oldZoom * zoomFactor));
+
+        // カーソル位置を固定したズーム
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        const viewPos = new paper.Point(mouseX, mouseY);
+        const mPosBefore = view.viewToProject(viewPos);
+
+        view.zoom = newZoom;
+
+        const mPosAfter = view.viewToProject(viewPos);
+        view.center = view.center.add(mPosBefore.subtract(mPosAfter));
+
+        view.draw();
+        if (this.onZoomChange) {
+          this.onZoomChange(newZoom);
+        }
+      },
+      { passive: false }
+    );
+
+    // キーボード（スペースキー）の監視
+    window.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !this.isSpacePressed) {
+        this.isSpacePressed = true;
+        canvas.style.cursor = 'grab';
+      }
+    });
+
+    window.addEventListener('keyup', (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        this.isSpacePressed = false;
+        canvas.style.cursor = 'default';
+      }
+    });
+
+    // 右クリック/中クリックによるパン移動
+    canvas.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.button === 1 || e.button === 2 || this.isSpacePressed || this.currentTool === 'pan') {
+        e.preventDefault();
+        this.isPanning = true;
+        this.lastPanPoint = { x: e.clientX, y: e.clientY };
+        canvas.style.cursor = 'grabbing';
+      }
+    });
+
+    window.addEventListener('mousemove', (e: MouseEvent) => {
+      if (!this.isPanning) return;
+      const dx = (e.clientX - this.lastPanPoint.x) / this.scope.view.zoom;
+      const dy = (e.clientY - this.lastPanPoint.y) / this.scope.view.zoom;
+
+      this.scope.view.center = this.scope.view.center.subtract(new paper.Point(dx, dy));
+      this.lastPanPoint = { x: e.clientX, y: e.clientY };
+      this.scope.view.draw();
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (this.isPanning) {
+        this.isPanning = false;
+        canvas.style.cursor = this.isSpacePressed ? 'grab' : 'default';
+      }
+    });
+
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  // 全体表示（画面にぴったりフィット）
+  public fitToScreen() {
+    const view = this.scope.view;
+    const bounds = this.scope.project.activeLayer.bounds;
+
+    if (bounds.width > 0 && bounds.height > 0) {
+      const padding = 60;
+      const scaleX = (this.canvas.clientWidth - padding * 2) / bounds.width;
+      const scaleY = (this.canvas.clientHeight - padding * 2) / bounds.height;
+      const fitZoom = Math.min(scaleX, scaleY, 1.2);
+
+      view.zoom = Math.max(0.2, fitZoom);
+      view.center = bounds.center;
+    } else {
+      view.zoom = 0.8;
+      view.center = new paper.Point(this.canvas.clientWidth / 2, this.canvas.clientHeight / 2);
+    }
+
+    view.draw();
+    if (this.onZoomChange) {
+      this.onZoomChange(view.zoom);
+    }
+  }
+
+  // 100%等倍ズームリセット
+  public resetZoom() {
+    this.scope.view.zoom = 1.0;
+    const bounds = this.scope.project.activeLayer.bounds;
+    this.scope.view.center = bounds.width > 0 ? bounds.center : new paper.Point(430, 550);
+    this.scope.view.draw();
+    if (this.onZoomChange) {
+      this.onZoomChange(1.0);
+    }
+  }
+
   // ツールに応じたマウスインタラクション
   private setupInteractions() {
     const tool = new this.scope.Tool();
@@ -229,6 +357,10 @@ export class PaperManager {
     let lastPoint = new paper.Point(0, 0);
 
     tool.onMouseDown = (event: paper.ToolEvent) => {
+      if (this.isSpacePressed || this.isPanning || this.currentTool === 'pan') {
+        return;
+      }
+
       isDragging = true;
       lastPoint = event.point;
 
@@ -240,7 +372,9 @@ export class PaperManager {
     };
 
     tool.onMouseDrag = (event: paper.ToolEvent) => {
-      if (!isDragging) return;
+      if (this.isSpacePressed || this.isPanning || this.currentTool === 'pan' || !isDragging) {
+        return;
+      }
       const delta = event.point.subtract(lastPoint);
 
       if (this.currentTool === 'select') {
@@ -248,7 +382,6 @@ export class PaperManager {
       } else if (this.currentTool === 'liquify') {
         this.applyLiquify(event.point, delta);
       } else if (this.currentTool === 'warp' && this.selectedItem) {
-        // パペットワープ / スケール誇張
         this.selectedItem.scale(1 + delta.y * -0.005, event.point);
       }
 
@@ -268,7 +401,7 @@ export class PaperManager {
       segments: true,
       stroke: true,
       fill: true,
-      tolerance: 6,
+      tolerance: 6 / this.scope.view.zoom,
       handles: true,
     };
 
@@ -307,7 +440,7 @@ export class PaperManager {
     if (this.selectedHandle === 'handleIn' && this.selectedSegment) {
       this.selectedSegment.handleIn = this.selectedSegment.handleIn.add(delta);
     } else if (this.selectedHandle === 'handleOut' && this.selectedSegment) {
-      this.selectedSegment.handleOut = this.selectedSegment.handleOut.add(delta);
+      this.selectedHandleOut(delta);
     } else if (this.selectedSegment) {
       this.selectedSegment.point = this.selectedSegment.point.add(delta);
     } else if (this.selectedItem) {
@@ -315,15 +448,19 @@ export class PaperManager {
     }
   }
 
+  private selectedHandleOut(delta: paper.Point) {
+    if (this.selectedSegment) {
+      this.selectedSegment.handleOut = this.selectedSegment.handleOut.add(delta);
+    }
+  }
+
   // ゆがみブラシ（Liquify Push Brush）
-  // 筆圧のように、なぞった方向へベクター頂点を自然に押し出す
   private applyLiquify(center: paper.Point, delta: paper.Point) {
     if (delta.length === 0) return;
 
     const radius = this.brushRadius;
     const strength = this.brushStrength;
 
-    // キャンバス上のすべてのアンロックされたパスアイテムを対象に変形
     this.scope.project.activeLayer.children.forEach((item: any) => {
       if (item === this.faceGuideGroup) return;
       this.deformItemRecursive(item, center, delta, radius, strength);
@@ -351,18 +488,15 @@ export class PaperManager {
       item.segments.forEach((seg) => {
         const d = seg.point.getDistance(center);
         if (d < radius) {
-          // なめらかなコサイン減衰
           const factor = Math.cos((d / radius) * (Math.PI / 2)) * strength;
           const offset = delta.multiply(factor);
           seg.point = seg.point.add(offset);
         }
       });
-      // パスのなめらかさを維持
       item.smooth({ type: 'catmull-rom', factor: 0.2 });
     }
   }
 
-  // 線の太さ（筆圧・強弱）の一括変更
   public setStrokeWidth(width: number, targetPartId?: BodyPartId) {
     this.layers.forEach((layer) => {
       if (layer.type === 'line' && (!targetPartId || layer.partId === targetPartId)) {
@@ -379,7 +513,6 @@ export class PaperManager {
     }
   }
 
-  // レイヤーの表示・非表示
   public setLayerVisibility(layerId: string, visible: boolean) {
     const layer = this.layers.find((l) => l.id === layerId);
     const ref = this.items.get(layerId);
@@ -393,7 +526,6 @@ export class PaperManager {
     }
   }
 
-  // レイヤーのロック
   public setLayerLocked(layerId: string, locked: boolean) {
     const layer = this.layers.find((l) => l.id === layerId);
     const ref = this.items.get(layerId);
@@ -406,7 +538,6 @@ export class PaperManager {
     }
   }
 
-  // レイヤーの不透明度
   public setLayerOpacity(layerId: string, opacity: number) {
     const layer = this.layers.find((l) => l.id === layerId);
     const ref = this.items.get(layerId);
@@ -420,7 +551,6 @@ export class PaperManager {
     }
   }
 
-  // レイヤーの色変更
   public setLayerColor(layerId: string, colorHex: string) {
     const layer = this.layers.find((l) => l.id === layerId);
     const ref = this.items.get(layerId);
@@ -451,22 +581,18 @@ export class PaperManager {
     return [...this.layers];
   }
 
-  // SVGとしてエクスポート
   public exportSVG(): string {
     return this.scope.project.exportSVG({ asString: true }) as string;
   }
 
-  // PNGデータURLとしてエクスポート
   public exportDataURL(): string {
     return this.canvas.toDataURL('image/png');
   }
 
-  // 部位ごとのCanvasイメージを取得（PSDレイヤー生成用）
   public async exportPartCanvases(): Promise<{ name: string; canvas: HTMLCanvasElement }[]> {
     const results: { name: string; canvas: HTMLCanvasElement }[] = [];
     const origVisibilities = new Map<string, boolean>();
 
-    // 全アイテムを一度退避
     this.items.forEach((item, id) => {
       origVisibilities.set(id, item.pathItem.visible);
       item.pathItem.visible = false;
@@ -476,7 +602,6 @@ export class PaperManager {
       this.faceGuideGroup.visible = false;
     }
 
-    // 1レイヤーずつレンダリングしてキャンバスを複製
     for (const layer of this.layers) {
       const ref = this.items.get(layer.id);
       if (!ref || !origVisibilities.get(layer.id)) continue;
@@ -499,7 +624,6 @@ export class PaperManager {
       ref.pathItem.visible = false;
     }
 
-    // 元に戻す
     this.items.forEach((item, id) => {
       item.pathItem.visible = origVisibilities.get(id) ?? true;
     });

@@ -7,11 +7,13 @@ import { PaperManager } from './utils/vector/PaperManager';
 import { Header } from './components/Header';
 import { PoseEditorView } from './components/PoseEditor/PoseEditorView';
 import { VectorStudioView } from './components/VectorStudio/VectorStudioView';
+import { PreviewModal } from './components/PreviewModal';
 import { ExportModal } from './components/ExportModal';
 
 export const App: React.FC = () => {
   const [mode, setMode] = useState<EditorMode>('3d-pose');
   const [vectorData, setVectorData] = useState<ExtractedVectorData | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState<boolean>(false);
   const [isExportOpen, setIsExportOpen] = useState<boolean>(false);
 
   const vrmMannequinRef = useRef<VrmMannequin | null>(null);
@@ -27,8 +29,8 @@ export const App: React.FC = () => {
     cameraRef.current = camera;
   };
 
-  // 3Dポーズから2Dベクター＆下地塗りを抽出して2D編集画面へ遷移
-  const handleGenerate2D = () => {
+  // 3Dポーズから2Dベクターを抽出してプレビューを開く
+  const handleOpenPreview = () => {
     if (!cameraRef.current || !vrmMannequinRef.current || !vrmMannequinRef.current.isLoaded) return;
 
     const extracted = VectorExtractor.extract(
@@ -41,11 +43,23 @@ export const App: React.FC = () => {
     if (!extracted) return;
 
     setVectorData(extracted);
+    setIsPreviewOpen(true);
+  };
+
+  // プレビューで構図OK時 ➔ 2Dベクタースタジオへ進む
+  const handleConfirmPreview = () => {
+    setIsPreviewOpen(false);
     setMode('2d-vector');
 
-    if (paperManagerRef.current) {
-      paperManagerRef.current.loadExtractedData(extracted);
+    if (paperManagerRef.current && vectorData) {
+      paperManagerRef.current.loadExtractedData(vectorData);
     }
+  };
+
+  // 3Dに戻る
+  const handleBackTo3D = () => {
+    setIsPreviewOpen(false);
+    setMode('3d-pose');
   };
 
   return (
@@ -53,8 +67,14 @@ export const App: React.FC = () => {
       {/* 共通ヘッダー */}
       <Header
         mode={mode}
-        onModeChange={setMode}
-        onGenerate2D={handleGenerate2D}
+        onModeChange={(newMode) => {
+          if (newMode === '2d-vector' && !vectorData) {
+            handleOpenPreview();
+          } else {
+            setMode(newMode);
+          }
+        }}
+        onGenerate2D={handleOpenPreview}
         onOpenExport={() => setIsExportOpen(true)}
         has2DData={vectorData !== null}
       />
@@ -79,6 +99,14 @@ export const App: React.FC = () => {
           />
         </div>
       </main>
+
+      {/* Step 1.5: 2D化プレビュー＆構図確認モーダル */}
+      <PreviewModal
+        isOpen={isPreviewOpen}
+        vectorData={vectorData}
+        onConfirm={handleConfirmPreview}
+        onBackTo3D={handleBackTo3D}
+      />
 
       {/* レイヤー保存（PSD/SVG/PNG）モーダル */}
       <ExportModal
