@@ -112,10 +112,10 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     // 初期化通知
     onInitialized(mannequin, vrmMannequin, camera, () => modelTypeRef.current);
 
-    // squoskie-1.vrm の自動ロード
+    // squoskie-1_2.vrm（下地ポリゴン完全保持素体）の自動ロード
     setIsLoadingVrm(true);
     vrmMannequin
-      .loadFromUrl('/models/squoskie-1.vrm')
+      .loadFromUrl('/models/squoskie-1_2.vrm')
       .then(() => {
         setIsLoadingVrm(false);
         setVrmLoadedSuccess(true);
