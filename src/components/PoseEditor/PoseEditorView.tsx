@@ -2,28 +2,45 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { FemaleMannequin } from '../../utils/three/MannequinModel';
+import { VrmMannequin } from '../../utils/three/VrmMannequin';
 import { POSE_PRESETS } from '../../utils/three/PosePresets';
 import { BodyPartId, PosePreset } from '../../types';
-import { Camera, RotateCcw, Eye, Sparkles, Sliders } from 'lucide-react';
+import { Camera, RotateCcw, Sparkles, Sliders, Upload, Download, Check, UserCheck } from 'lucide-react';
+
+export type ActiveModelType = 'vrm' | 'procedural';
 
 interface PoseEditorViewProps {
-  onInitialized: (mannequin: FemaleMannequin, camera: THREE.PerspectiveCamera) => void;
+  onInitialized: (
+    mannequin: FemaleMannequin,
+    vrmMannequin: VrmMannequin,
+    camera: THREE.PerspectiveCamera,
+    getActiveType: () => ActiveModelType
+  ) => void;
 }
 
 export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const mannequinRef = useRef<FemaleMannequin | null>(null);
+  const vrmRef = useRef<VrmMannequin | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [modelType, setModelType] = useState<ActiveModelType>('vrm');
   const [activePreset, setActivePreset] = useState<string>('s-curve');
-  const [fov, setFov] = useState<number>(38); // 35-40mm近傍が自然なポートレート画角
+  const [fov, setFov] = useState<number>(38);
   const [selectedPart, setSelectedPart] = useState<BodyPartId>('head');
   const [partRotations, setPartRotations] = useState<{ x: number; y: number; z: number }>({
     x: 0,
     y: 0,
     z: 0,
   });
+  const [isLoadingVrm, setIsLoadingVrm] = useState<boolean>(true);
+  const [vrmLoadedSuccess, setVrmLoadedSuccess] = useState<boolean>(false);
+
+  const modelTypeRef = useRef<ActiveModelType>('vrm');
+  modelTypeRef.current = modelType;
 
   useEffect(() => {
     if (!mountRef.current) return;
@@ -35,8 +52,9 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x131620);
     scene.fog = new THREE.FogExp2(0x131620, 0.04);
+    sceneRef.current = scene;
 
-    // 2. Camera (女性素体の胸元・顔が中央付近になるよう設定)
+    // 2. Camera
     const camera = new THREE.PerspectiveCamera(fov, width / height, 0.1, 100);
     camera.position.set(0, 5.0, 9.5);
     cameraRef.current = camera;
@@ -58,8 +76,8 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     controls.minDistance = 2;
     controlsRef.current = controls;
 
-    // 5. Lighting (女性素体の曲線を美しく陰影付けする3点照明)
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+    // 5. Lighting (陰影が際立つ3点スタジオライティング)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
     scene.add(ambientLight);
 
     const keyLight = new THREE.DirectionalLight(0xfff6ed, 1.4);
@@ -75,25 +93,46 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     rimLight.position.set(0, -3, -6);
     scene.add(rimLight);
 
-    // 6. Ground Grid (薄いグリッドで空間認識をサポート)
+    // 6. Ground Grid
     const grid = new THREE.GridHelper(20, 20, 0x3d445c, 0x222638);
     grid.position.y = 0;
     scene.add(grid);
 
-    // 7. Female Mannequin
+    // 7. プロシージャル素体
     const mannequin = new FemaleMannequin();
+    mannequin.rootGroup.visible = false;
     scene.add(mannequin.rootGroup);
     mannequinRef.current = mannequin;
 
-    // 初期ポーズ適用 (S字立ち)
-    const initialPreset = POSE_PRESETS.find((p) => p.id === 's-curve');
-    if (initialPreset) {
-      mannequin.applyPose(initialPreset.rotations);
-    }
+    // 8. VRM素体（squoskie-1.vrm）
+    const vrmMannequin = new VrmMannequin();
+    scene.add(vrmMannequin.rootGroup);
+    vrmRef.current = vrmMannequin;
 
-    onInitialized(mannequin, camera);
+    // 初期化通知
+    onInitialized(mannequin, vrmMannequin, camera, () => modelTypeRef.current);
 
-    // 8. Animation Loop
+    // squoskie-1.vrm の自動ロード
+    setIsLoadingVrm(true);
+    vrmMannequin
+      .loadFromUrl('/models/squoskie-1.vrm')
+      .then(() => {
+        setIsLoadingVrm(false);
+        setVrmLoadedSuccess(true);
+        // S字立ちポーズ適用
+        const initialPreset = POSE_PRESETS.find((p) => p.id === 's-curve');
+        if (initialPreset) {
+          vrmMannequin.applyPose(initialPreset.rotations);
+        }
+      })
+      .catch((err) => {
+        console.warn('VRM load failed, fallback to procedural:', err);
+        setIsLoadingVrm(false);
+        setModelType('procedural');
+        mannequin.rootGroup.visible = true;
+      });
+
+    // 9. Animation Loop
     let animId: number;
     const animate = () => {
       animId = requestAnimationFrame(animate);
@@ -102,7 +141,6 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     };
     animate();
 
-    // Resize Handler
     const handleResize = () => {
       if (!mountRef.current) return;
       const w = mountRef.current.clientWidth;
@@ -123,7 +161,44 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     };
   }, []);
 
-  // FOV更新 (パースの強さ)
+  // モデル種別切り替え
+  const handleModelTypeChange = (type: ActiveModelType) => {
+    setModelType(type);
+    if (mannequinRef.current && vrmRef.current) {
+      mannequinRef.current.rootGroup.visible = type === 'procedural';
+      vrmRef.current.rootGroup.visible = type === 'vrm';
+    }
+  };
+
+  // ファイルアップロード（別のVRM/GLBの読み込み）
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !vrmRef.current) return;
+
+    setIsLoadingVrm(true);
+    vrmRef.current
+      .loadFromFile(file)
+      .then(() => {
+        setIsLoadingVrm(false);
+        setVrmLoadedSuccess(true);
+        handleModelTypeChange('vrm');
+        const initialPreset = POSE_PRESETS.find((p) => p.id === activePreset) || POSE_PRESETS[0];
+        vrmRef.current?.applyPose(initialPreset.rotations);
+      })
+      .catch((err) => {
+        setIsLoadingVrm(false);
+        alert('VRMファイルの読み込みに失敗しました: ' + err.message);
+      });
+  };
+
+  // 素体のみのGLBエクスポート
+  const handleExportCleanGlb = () => {
+    if (vrmRef.current && vrmRef.current.isLoaded) {
+      vrmRef.current.exportCleanMannequinGlb('squoskie_clean_mannequin.glb');
+    }
+  };
+
+  // FOV更新
   const handleFovChange = (newFov: number) => {
     setFov(newFov);
     if (cameraRef.current) {
@@ -132,14 +207,13 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     }
   };
 
-  // プリセットポーズ選択
+  // プリセットポーズ適用
   const handleApplyPreset = (preset: PosePreset) => {
     setActivePreset(preset.id);
-    if (mannequinRef.current) {
+    if (modelType === 'vrm' && vrmRef.current) {
+      vrmRef.current.applyPose(preset.rotations);
+    } else if (mannequinRef.current) {
       mannequinRef.current.applyPose(preset.rotations);
-      const cur = mannequinRef.current.getCurrentPose();
-      const partRot = cur[selectedPart] || [0, 0, 0];
-      setPartRotations({ x: partRot[0], y: partRot[1], z: partRot[2] });
     }
   };
 
@@ -150,19 +224,19 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
     const ctrl = controlsRef.current;
 
     switch (type) {
-      case 'front': // 正面目線
+      case 'front':
         cam.position.set(0, 5.2, 9.5);
         ctrl.target.set(0, 5.2, 0);
         break;
-      case 'aori': // アオリ（ローアングル、脚長・迫力効果）
+      case 'aori':
         cam.position.set(0, 1.8, 8.5);
         ctrl.target.set(0, 5.0, 0);
         break;
-      case 'fukan': // 俯瞰（ハイアングル、頭部強調・小顔効果）
+      case 'fukan':
         cam.position.set(0, 8.8, 8.0);
         ctrl.target.set(0, 4.8, 0);
         break;
-      case 'three-quarter': // ナナメ45度（王道の立体感）
+      case 'three-quarter':
         cam.position.set(5.5, 5.2, 7.5);
         ctrl.target.set(0, 5.0, 0);
         break;
@@ -174,7 +248,9 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
   const handleRotationChange = (axis: 'x' | 'y' | 'z', value: number) => {
     const updated = { ...partRotations, [axis]: value };
     setPartRotations(updated);
-    if (mannequinRef.current) {
+    if (modelType === 'vrm' && vrmRef.current) {
+      vrmRef.current.setPartRotation(selectedPart, updated.x, updated.y, updated.z);
+    } else if (mannequinRef.current) {
       mannequinRef.current.setPartRotation(selectedPart, updated.x, updated.y, updated.z);
     }
   };
@@ -186,9 +262,32 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
         <div className="floating-3d-hints">
           <span>ドラッグ: 視点回転 | 右ドラッグ: 平行移動 | スクロール: ズーム</span>
         </div>
+
+        {/* VRMローディング表示 */}
+        {isLoadingVrm && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              background: 'rgba(22, 25, 34, 0.85)',
+              padding: '16px 24px',
+              borderRadius: 8,
+              border: '1px solid var(--border-color)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              color: 'var(--text-main)',
+            }}
+          >
+            <Sparkles className="animate-spin" size={20} color="var(--primary)" />
+            <span>VRoid素体（squoskie-1）を読み込み・素体化中...</span>
+          </div>
+        )}
       </div>
 
-      {/* 右側：ポーズ・カメラ設定パネル */}
+      {/* 右側：ポーズ・素体設定パネル */}
       <div className="side-panel">
         <div className="panel-header">
           <span>3Dポージング設定</span>
@@ -199,6 +298,85 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
           >
             <RotateCcw size={16} />
           </button>
+        </div>
+
+        {/* モデル切り替え & 素体エクスポートセクション */}
+        <div className="panel-section">
+          <div className="section-title">
+            <UserCheck size={14} style={{ display: 'inline', marginRight: 6 }} />
+            使用素体モデル
+          </div>
+
+          <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+            <button
+              className={`btn-secondary ${modelType === 'vrm' ? 'active' : ''}`}
+              onClick={() => handleModelTypeChange('vrm')}
+              style={{
+                flex: 1,
+                padding: '6px 8px',
+                fontSize: '0.8rem',
+                borderColor: modelType === 'vrm' ? 'var(--primary)' : undefined,
+                background: modelType === 'vrm' ? 'rgba(99,102,241,0.15)' : undefined,
+              }}
+            >
+              VRoid素体 (squoskie)
+            </button>
+            <button
+              className={`btn-secondary ${modelType === 'procedural' ? 'active' : ''}`}
+              onClick={() => handleModelTypeChange('procedural')}
+              style={{
+                flex: 1,
+                padding: '6px 8px',
+                fontSize: '0.8rem',
+                borderColor: modelType === 'procedural' ? 'var(--primary)' : undefined,
+                background: modelType === 'procedural' ? 'rgba(99,102,241,0.15)' : undefined,
+              }}
+            >
+              基本素体
+            </button>
+          </div>
+
+          {/* 素体GLBダウンロード & 外部VRMアップロード */}
+          {modelType === 'vrm' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <button
+                className="btn-secondary"
+                onClick={handleExportCleanGlb}
+                style={{
+                  width: '100%',
+                  padding: '6px 10px',
+                  fontSize: '0.78rem',
+                  color: 'var(--accent-cyan)',
+                  borderColor: 'rgba(6,182,212,0.3)',
+                }}
+                title="髪・服を除去した素体だけのGLBファイルをダウンロード"
+              >
+                <Download size={14} />
+                <span>素体モデル保存 (.glb)</span>
+              </button>
+
+              <button
+                className="btn-secondary"
+                onClick={() => fileInputRef.current?.click()}
+                style={{
+                  width: '100%',
+                  padding: '6px 10px',
+                  fontSize: '0.78rem',
+                  color: 'var(--text-muted)',
+                }}
+              >
+                <Upload size={14} />
+                <span>別のVRM/GLBを読込</span>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".vrm,.glb,.gltf"
+                style={{ display: 'none' }}
+                onChange={handleFileUpload}
+              />
+            </div>
+          )}
         </div>
 
         {/* カメラ・画角アングル設定 */}
@@ -243,7 +421,7 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
         <div className="panel-section" style={{ flex: 1 }}>
           <div className="section-title">
             <Sparkles size={14} style={{ display: 'inline', marginRight: 6 }} />
-            ポーズプリセット (女性素体)
+            ポーズプリセット
           </div>
 
           <div className="preset-grid">
@@ -268,7 +446,7 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
         <div className="panel-section">
           <div className="section-title">
             <Sliders size={14} style={{ display: 'inline', marginRight: 6 }} />
-            部位の手動微調整 (FK)
+            関節の手動微調整 (FK)
           </div>
 
           <select
@@ -276,11 +454,7 @@ export const PoseEditorView: React.FC<PoseEditorViewProps> = ({ onInitialized })
             onChange={(e) => {
               const part = e.target.value as BodyPartId;
               setSelectedPart(part);
-              if (mannequinRef.current) {
-                const cur = mannequinRef.current.getCurrentPose();
-                const rot = cur[part] || [0, 0, 0];
-                setPartRotations({ x: rot[0], y: rot[1], z: rot[2] });
-              }
+              setPartRotations({ x: 0, y: 0, z: 0 });
             }}
             style={{
               width: '100%',

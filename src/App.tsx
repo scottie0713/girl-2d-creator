@@ -2,10 +2,11 @@ import React, { useRef, useState } from 'react';
 import * as THREE from 'three';
 import { EditorMode, ExtractedVectorData } from './types';
 import { FemaleMannequin } from './utils/three/MannequinModel';
+import { VrmMannequin } from './utils/three/VrmMannequin';
 import { VectorExtractor } from './utils/three/VectorExtractor';
 import { PaperManager } from './utils/vector/PaperManager';
 import { Header } from './components/Header';
-import { PoseEditorView } from './components/PoseEditor/PoseEditorView';
+import { PoseEditorView, ActiveModelType } from './components/PoseEditor/PoseEditorView';
 import { VectorStudioView } from './components/VectorStudio/VectorStudioView';
 import { ExportModal } from './components/ExportModal';
 
@@ -15,26 +16,48 @@ export const App: React.FC = () => {
   const [isExportOpen, setIsExportOpen] = useState<boolean>(false);
 
   const mannequinRef = useRef<FemaleMannequin | null>(null);
+  const vrmMannequinRef = useRef<VrmMannequin | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const paperManagerRef = useRef<PaperManager | null>(null);
+  const getActiveModelTypeRef = useRef<() => ActiveModelType>(() => 'vrm');
 
   // 3Dシーン初期化完了時
-  const handle3DInitialized = (mannequin: FemaleMannequin, camera: THREE.PerspectiveCamera) => {
+  const handle3DInitialized = (
+    mannequin: FemaleMannequin,
+    vrmMannequin: VrmMannequin,
+    camera: THREE.PerspectiveCamera,
+    getActiveType: () => ActiveModelType
+  ) => {
     mannequinRef.current = mannequin;
+    vrmMannequinRef.current = vrmMannequin;
     cameraRef.current = camera;
+    getActiveModelTypeRef.current = getActiveType;
   };
 
   // 3Dポーズから2Dベクター＆下地塗りを抽出して2D編集画面へ遷移
   const handleGenerate2D = () => {
-    if (!mannequinRef.current || !cameraRef.current) return;
+    if (!cameraRef.current) return;
+    const activeType = getActiveModelTypeRef.current();
 
-    // 2Dキャンバスサイズ (860x1100) に合わせて抽出
-    const extracted = VectorExtractor.extract(
-      mannequinRef.current,
-      cameraRef.current,
-      860,
-      1100
-    );
+    let extracted: ExtractedVectorData | null = null;
+
+    if (activeType === 'vrm' && vrmMannequinRef.current && vrmMannequinRef.current.isLoaded) {
+      extracted = VectorExtractor.extractFromVrm(
+        vrmMannequinRef.current,
+        cameraRef.current,
+        860,
+        1100
+      );
+    } else if (mannequinRef.current) {
+      extracted = VectorExtractor.extract(
+        mannequinRef.current,
+        cameraRef.current,
+        860,
+        1100
+      );
+    }
+
+    if (!extracted) return;
 
     setVectorData(extracted);
     setMode('2d-vector');

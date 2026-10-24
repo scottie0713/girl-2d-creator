@@ -1,13 +1,7 @@
 import * as THREE from 'three';
 import { BodyPartId, ExtractedVectorData, PartVectorData, Point2D, VectorPathSegment } from '../../types';
 import { FemaleMannequin } from './MannequinModel';
-
-interface EdgeInfo {
-  v1: THREE.Vector3;
-  v2: THREE.Vector3;
-  face1: number;
-  face2: number;
-}
+import { VrmMannequin } from './VrmMannequin';
 
 export class VectorExtractor {
   /**
@@ -26,7 +20,7 @@ export class VectorExtractor {
     const partsData: PartVectorData[] = [];
 
     mannequin.parts.forEach((partInfo) => {
-      const partVector = this.extractPart(
+      const partVector = this.extractFromMesh(
         partInfo.id,
         partInfo.name,
         partInfo.mesh,
@@ -55,25 +49,79 @@ export class VectorExtractor {
     };
   }
 
-  private static extractPart(
+  /**
+   * VRM素体モデルから2Dベクター線画＆下地塗りを抽出
+   */
+  public static extractFromVrm(
+    vrmMannequin: VrmMannequin,
+    camera: THREE.PerspectiveCamera,
+    viewportWidth: number,
+    viewportHeight: number
+  ): ExtractedVectorData {
+    vrmMannequin.rootGroup.updateMatrixWorld(true);
+    camera.updateMatrixWorld(true);
+
+    const partsData: PartVectorData[] = [];
+
+    // 表示されている素体メッシュを抽出
+    vrmMannequin.rootGroup.traverse((obj) => {
+      if (obj.visible && (obj instanceof THREE.SkinnedMesh || obj instanceof THREE.Mesh)) {
+        const name = obj.name || '素体パーツ';
+        const partId: BodyPartId = name.toLowerCase().includes('face') ? 'head' : 'chest';
+        const partVector = this.extractFromMesh(
+          partId,
+          name,
+          obj,
+          camera,
+          viewportWidth,
+          viewportHeight
+        );
+        if (partVector) {
+          partsData.push(partVector);
+        }
+      }
+    });
+
+    partsData.sort((a, b) => b.depth - a.depth);
+
+    return {
+      timestamp: Date.now(),
+      width: viewportWidth,
+      height: viewportHeight,
+      camera: {
+        fov: camera.fov,
+        position: [camera.position.x, camera.position.y, camera.position.z],
+        target: [0, 5, 0],
+      },
+      parts: partsData,
+    };
+  }
+
+  private static extractFromMesh(
     partId: BodyPartId,
     name: string,
-    mesh: THREE.Mesh,
+    mesh: THREE.Mesh | THREE.SkinnedMesh,
     camera: THREE.PerspectiveCamera,
     width: number,
     height: number
   ): PartVectorData | null {
-    const geometry = mesh.geometry.clone();
     mesh.updateMatrixWorld(true);
-    geometry.applyMatrix4(mesh.matrixWorld);
-
+    const geometry = mesh.geometry;
     const posAttr = geometry.getAttribute('position');
     const indexAttr = geometry.getIndex();
     if (!posAttr) return null;
 
+    const isSkinned = mesh instanceof THREE.SkinnedMesh;
     const vertices: THREE.Vector3[] = [];
+
+    // ワールド空間でのポーズ変形後頂点を算出
     for (let i = 0; i < posAttr.count; i++) {
-      vertices.push(new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)));
+      const v = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+      if (isSkinned) {
+        mesh.boneTransform(i, v);
+      }
+      v.applyMatrix4(mesh.matrixWorld);
+      vertices.push(v);
     }
 
     // 面データの取得
@@ -165,18 +213,14 @@ export class VectorExtractor {
           // 両方表の場合、法線角度差をチェック（クリース）
           const angle = f1.normal.angleTo(f2.normal);
           if (angle > 0.85) {
-            // 約48度以上のシャープエッジ
             creaseSegments.push([p1, p2]);
           }
         }
       }
     });
 
-    // エッジ同士を繋いで連続パスに変換
     const outlinePaths = this.chainSegments(silhouetteSegments);
     const creasePaths = this.chainSegments(creaseSegments);
-
-    // 塗りつぶし領域（表向き面の投影外周から閉じたポリゴン群を構築）
     const fillPolygon = this.buildFillPolygons(outlinePaths, silhouetteSegments);
 
     return {
@@ -197,7 +241,6 @@ export class VectorExtractor {
     height: number
   ): Point2D | null {
     const p = v.clone().project(camera);
-    // カメラの後ろにある点はスキップ
     if (p.z > 1.0) return null;
 
     return {
@@ -206,11 +249,11 @@ export class VectorExtractor {
     };
   }
 
-  // バラバラのエッジセグメントを連続したパス（Polyline）に連結する
+  // エッジセグメントを連続したパスに連結
   private static chainSegments(segments: [Point2D, Point2D][]): VectorPathSegment[] {
     if (segments.length === 0) return [];
 
-    const threshold = 5.0; // 5px以内の近接端点を結合
+    const threshold = 5.0;
     const used = new Array(segments.length).fill(false);
     const paths: VectorPathSegment[] = [];
 
@@ -230,7 +273,6 @@ export class VectorExtractor {
           if (used[j]) continue;
           const [p1, p2] = segments[j];
 
-          // tailに接続
           const dTailP1 = this.distSq(tail, p1);
           const dTailP2 = this.distSq(tail, p2);
 
@@ -246,7 +288,6 @@ export class VectorExtractor {
             break;
           }
 
-          // headに接続
           const dHeadP1 = this.distSq(head, p1);
           const dHeadP2 = this.distSq(head, p2);
 
@@ -264,7 +305,6 @@ export class VectorExtractor {
         }
       }
 
-      // 始点と終点が近ければ閉じる
       const isClosed = this.distSq(path[0], path[path.length - 1]) < threshold * threshold * 2;
       if (path.length >= 3) {
         paths.push({
@@ -277,19 +317,16 @@ export class VectorExtractor {
     return paths;
   }
 
-  // 閉じた塗りつぶし領域の生成
   private static buildFillPolygons(
     outlinePaths: VectorPathSegment[],
     allSegments: [Point2D, Point2D][]
   ): Point2D[][] {
     const polygons: Point2D[][] = [];
 
-    // 既に閉じてある輪郭パスを採用
     outlinePaths.forEach((path) => {
       if (path.closed && path.points.length >= 3) {
         polygons.push(path.points);
       } else if (path.points.length >= 4) {
-        // ほぼ閉じている場合も末尾と先頭を結んで閉路とする
         polygons.push([...path.points, path.points[0]]);
       }
     });
@@ -297,7 +334,6 @@ export class VectorExtractor {
     return polygons;
   }
 
-  // パスの簡略化（ラマー・ダグラス・ポイッカー法）で余計な頂点を減らし滑らかにする
   private static simplifyPath(points: Point2D[], tolerance: number): Point2D[] {
     if (points.length <= 2) return points;
 
