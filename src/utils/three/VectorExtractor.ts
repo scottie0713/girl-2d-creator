@@ -12,7 +12,19 @@ export class VectorExtractor {
     viewportWidth: number,
     viewportHeight: number
   ): ExtractedVectorData {
+    // 1. シーンとボーン行列の完全強制更新
     vrmMannequin.rootGroup.updateMatrixWorld(true);
+
+    vrmMannequin.rootGroup.traverse((obj) => {
+      if (obj instanceof THREE.SkinnedMesh && obj.skeleton) {
+        obj.skeleton.update();
+      }
+    });
+
+    // 2. カメラのアスペクト比を2Dキャンバスの縦横比に一時的に完全同期
+    const originalAspect = camera.aspect;
+    camera.aspect = viewportWidth / viewportHeight;
+    camera.updateProjectionMatrix();
     camera.updateMatrixWorld(true);
 
     const partsData: PartVectorData[] = [];
@@ -36,6 +48,11 @@ export class VectorExtractor {
       }
     });
 
+    // カメラのアスペクト比を元に戻す
+    camera.aspect = originalAspect;
+    camera.updateProjectionMatrix();
+
+    // 視点からの距離でソート（奥から手前）
     partsData.sort((a, b) => b.depth - a.depth);
 
     return {
@@ -65,10 +82,14 @@ export class VectorExtractor {
     const indexAttr = geometry.getIndex();
     if (!posAttr) return null;
 
-    const isSkinned = mesh instanceof THREE.SkinnedMesh;
+    const isSkinned = mesh instanceof THREE.SkinnedMesh && mesh.skeleton;
+    if (isSkinned) {
+      mesh.skeleton.update();
+    }
+
     const vertices: THREE.Vector3[] = [];
 
-    // ワールド空間でのポーズ変形後頂点を算出
+    // 頂点のボーン変形後ワールド座標を精密計算
     for (let i = 0; i < posAttr.count; i++) {
       const v = new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
       if (isSkinned) {
@@ -78,8 +99,8 @@ export class VectorExtractor {
       vertices.push(v);
     }
 
-    // 面データの取得
-    const faces: { a: number; b: number; c: number; normal: THREE.Vector3; frontFacing: boolean }[] = [];
+    // 面データの取得と視線内積（裏表）判定
+    const faces: { a: number; b: number; c: number; frontFacing: boolean }[] = [];
     const numFaces = indexAttr ? indexAttr.count / 3 : posAttr.count / 3;
 
     let partCenter = new THREE.Vector3();
@@ -97,22 +118,23 @@ export class VectorExtractor {
       partCenter.add(va).add(vb).add(vc);
       vertexCount += 3;
 
-      // 面法線
+      // 面法線（変形後のワールド頂点から直接計算）
       const cb = new THREE.Vector3().subVectors(vc, vb);
       const ab = new THREE.Vector3().subVectors(va, vb);
-      const normal = new THREE.Vector3().crossVectors(cb, ab).normalize();
+      const normal = new THREE.Vector3().crossVectors(cb, ab);
 
-      // 視線方向との内積判定（裏表）
+      // 視線方向（カメラ位置から面中心へのベクトル）
       const faceCenter = new THREE.Vector3().add(va).add(vb).add(vc).divideScalar(3);
-      const viewDir = new THREE.Vector3().subVectors(camera.position, faceCenter).normalize();
+      const viewDir = new THREE.Vector3().subVectors(camera.position, faceCenter);
+
+      // 表裏判定（normalとviewDirの内積）
       const dot = normal.dot(viewDir);
 
       faces.push({
         a,
         b,
         c,
-        normal,
-        frontFacing: dot > 0.001,
+        frontFacing: dot > 0.0001,
       });
     }
 
@@ -121,7 +143,7 @@ export class VectorExtractor {
     }
     const depth = camera.position.distanceTo(partCenter);
 
-    // エッジの隣接辞書を作成
+    // エッジ隣接辞書の構築
     const edgeMap = new Map<string, { f1: number; f2: number; v1: number; v2: number }>();
     const getEdgeKey = (i1: number, i2: number) => (i1 < i2 ? `${i1}_${i2}` : `${i2}_${i1}`);
 
@@ -142,9 +164,9 @@ export class VectorExtractor {
       });
     });
 
-    // 輪郭線（シルエットエッジ）と稜線（クリース）の抽出
+    // シルエットエッジ（表と裏の境界、または境界エッジ）のみを正確に抽出
+    // ※内部のポリゴン割れ線（クリース）は除外して手の黒潰れを完全に防止！
     const silhouetteSegments: [Point2D, Point2D][] = [];
-    const creaseSegments: [Point2D, Point2D][] = [];
 
     edgeMap.forEach((edge) => {
       const f1 = faces[edge.f1];
@@ -160,34 +182,28 @@ export class VectorExtractor {
           silhouetteSegments.push([p1, p2]);
         }
       } else {
-        // 表と裏の境界 = シルエットエッジ
+        // 表と裏の境界 = シルエット外形線
         if (f1.frontFacing !== f2.frontFacing) {
           silhouetteSegments.push([p1, p2]);
-        } else if (f1.frontFacing && f2.frontFacing) {
-          // 両方表の場合、法線角度差をチェック（クリース）
-          const angle = f1.normal.angleTo(f2.normal);
-          if (angle > 0.85) {
-            creaseSegments.push([p1, p2]);
-          }
         }
       }
     });
 
+    // 連続パスへ連結
     const outlinePaths = this.chainSegments(silhouetteSegments);
-    const creasePaths = this.chainSegments(creaseSegments);
-    const fillPolygon = this.buildFillPolygons(outlinePaths, silhouetteSegments);
+    const fillPolygon = this.buildFillPolygons(outlinePaths);
 
     return {
       partId,
       name,
       outlinePaths,
-      creasePaths,
+      creasePaths: [], // 内部の余計な線は出さず、すっきりしたアニメ線画にする
       fillPolygon,
       depth,
     };
   }
 
-  // 3Dワールド座標から2Dスクリーン座標への投影
+  // 3Dワールド座標から2Dスクリーン座標への正確な投影
   private static projectToScreen(
     v: THREE.Vector3,
     camera: THREE.PerspectiveCamera,
@@ -195,7 +211,8 @@ export class VectorExtractor {
     height: number
   ): Point2D | null {
     const p = v.clone().project(camera);
-    if (p.z > 1.0) return null;
+    // カメラのクリップ平面外は除外
+    if (p.z < -1.0 || p.z > 1.0) return null;
 
     return {
       x: ((p.x + 1) * width) / 2,
@@ -203,11 +220,11 @@ export class VectorExtractor {
     };
   }
 
-  // エッジセグメントを連続したパスに連結
+  // 近接エッジセグメントを連続したPolylineに連結
   private static chainSegments(segments: [Point2D, Point2D][]): VectorPathSegment[] {
     if (segments.length === 0) return [];
 
-    const threshold = 5.0;
+    const threshold = 4.0; // 4px以内を結合
     const used = new Array(segments.length).fill(false);
     const paths: VectorPathSegment[] = [];
 
@@ -262,7 +279,7 @@ export class VectorExtractor {
       const isClosed = this.distSq(path[0], path[path.length - 1]) < threshold * threshold * 2;
       if (path.length >= 3) {
         paths.push({
-          points: this.simplifyPath(path, 1.2),
+          points: this.simplifyPath(path, 0.8),
           closed: isClosed,
         });
       }
@@ -271,16 +288,15 @@ export class VectorExtractor {
     return paths;
   }
 
-  private static buildFillPolygons(
-    outlinePaths: VectorPathSegment[],
-    allSegments: [Point2D, Point2D][]
-  ): Point2D[][] {
+  // 閉じた塗りつぶし領域の生成
+  private static buildFillPolygons(outlinePaths: VectorPathSegment[]): Point2D[][] {
     const polygons: Point2D[][] = [];
 
     outlinePaths.forEach((path) => {
       if (path.closed && path.points.length >= 3) {
         polygons.push(path.points);
       } else if (path.points.length >= 4) {
+        // ほぼ閉じている輪郭もクローズドパスにして塗り領域化
         polygons.push([...path.points, path.points[0]]);
       }
     });
@@ -288,6 +304,7 @@ export class VectorExtractor {
     return polygons;
   }
 
+  // ラマー・ダグラス・ポイッカー法によるパスの平滑化
   private static simplifyPath(points: Point2D[], tolerance: number): Point2D[] {
     if (points.length <= 2) return points;
 
